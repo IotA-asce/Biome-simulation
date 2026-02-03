@@ -1,35 +1,43 @@
 # Biome Simulation
 
-Iterative 3D biome simulation built in public (episode-by-episode). Current focus: seeded terrain generation using Perlin noise.
+Iterative biome simulation built in public (episode-by-episode). Current focus: seeded terrain generation using Perlin noise, rendered via a simple software 3D projection in pygame.
 
 ## Status
 
-- Terrain: 3D mesh generated from seeded Perlin noise
-- Rendering: Three.js scene with orbit controls
-- Tests: deterministic noise unit tests (Vitest)
+- Terrain: seeded Perlin fBm heightfield
+- Rendering: pygame window + orbit camera + wireframe terrain
+- Tests: deterministic noise unit tests (pytest)
 
 ## Local Dev
 
-Requirements: Node.js 20+ (recommended)
+Recommended: Python 3.12+ (pygame-ce supports newer versions; this repo uses `pygame-ce`)
 
 ```bash
-npm install
-npm run dev
+python3 -m venv .venv
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-Other useful commands:
+Run:
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-npm run preview
+.venv/bin/python main.py
+```
+
+Tests:
+
+```bash
+.venv/bin/python -m pytest
 ```
 
 ## Controls
 
+- `LMB drag` orbit camera
+- `Mouse wheel` zoom
+- `Arrow keys` orbit camera
 - `R` regenerate terrain (new seed)
-- `G` toggle wireframe
+- `G` toggle wireframe (placeholder toggle)
+- `Esc` quit
 
 ## Repo Notes
 

@@ -1,6 +1,8 @@
 # Project Goals
 
-This repo builds a 3D biome simulation in iterative episodes (YouTube-friendly), starting from terrain generation and scaling up to vegetation, wildlife, and ecosystem dynamics.
+This repo builds a 3D-ish biome simulation in iterative episodes (YouTube-friendly), starting from terrain generation and scaling up to vegetation, wildlife, and ecosystem dynamics.
+
+Implementation stack: Python + pygame (software 3D projection for early iterations).
 
 ## Core Goals
 
@@ -11,18 +13,18 @@ This repo builds a 3D biome simulation in iterative episodes (YouTube-friendly),
 - Implement food chains and predation (plants -> herbivores -> carnivores)
 - Add herd / flock behavior (cohesion, separation, alignment) and threat response
 - Make agents interact with terrain (navigation, slope limits, water avoidance/usage)
-- Keep simulation performant (instancing, spatial partitioning, fixed timestep)
+- Keep simulation performant (chunked rendering, spatial partitioning, fixed timestep)
 
 ## Episode Milestones (High Level)
 
-1. Project scaffold + 3D renderer + reproducible seeded terrain
-2. Terrain layers: waterline, biomes by temperature/moisture, vertex colors
-3. Vegetation pass 1: instanced meshes, density maps, LOD strategy
-4. Wildlife pass 1: agent loop, needs, movement, simple sensing
-5. Predation + grazing + energy budgets + population stability controls
-6. Herd behavior + territory + migration triggers
-7. Persistence (save/load seed + world state) and replayability
-8. Instrumentation: graphs, debugging tools, time controls
+1. Python/pygame scaffold + basic 3D renderer + reproducible seeded terrain
+2. Terrain layers: waterline + temperature/moisture maps + biome classification
+3. Vegetation pass 1: sprite/billboard placement via density maps + LOD by distance
+4. Wildlife pass 1: agent loop (fixed timestep), needs, simple sensing + steering
+5. Food chains: grazing + predation + energy budgets + stability controls
+6. Herd behavior: cohesion/alignment/separation + threat response
+7. Persistence: save/load seed + sim state + replay hooks
+8. Tooling: debug overlays, time controls, population graphs
 
 ## Definition of “Done” (v1)
 
