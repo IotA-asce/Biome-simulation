@@ -72,8 +72,8 @@ class VegetationField:
     def __init__(self, terrain: TerrainLike, params: VegetationParams | None = None):
         self.params = params or VegetationParams()
         self.instances: list[VegetationInstance] = []
-        # cell_index -> list of instance indices
-        self.cell_to_indices: dict[int, list[int]] = {}
+        # cell_index -> list of instance indices (None for empty cells)
+        self.cell_to_indices: list[list[int] | None] = []
         self.regenerate(terrain)
 
     def regenerate(self, terrain: TerrainLike) -> None:
@@ -81,13 +81,16 @@ class VegetationField:
         tp = terrain.params
 
         self.instances = []
-        self.cell_to_indices = {}
+        self.cell_to_indices = []
 
         g = tp.grid
         cells = g - 1
+        cell_count = cells * cells
         size = tp.size
         half = size * 0.5
         step = size / (g - 1)
+
+        self.cell_to_indices = [None] * cell_count
 
         # Dedicated noise fields for vegetation, but deterministic given terrain seed.
         moist_noise = Perlin2D(tp.seed ^ 0xA17F31D9)
@@ -173,9 +176,12 @@ class VegetationField:
                             self.instances.append(
                                 VegetationInstance(VegKind.TREE, (x, y, z), scale, tint)
                             )
-                            self.cell_to_indices.setdefault(
-                                cell_index_for(x, z), []
-                            ).append(idx)
+                            cell = cell_index_for(x, z)
+                            bucket = self.cell_to_indices[cell]
+                            if bucket is None:
+                                bucket = []
+                                self.cell_to_indices[cell] = bucket
+                            bucket.append(idx)
                             trees += 1
 
                     if (
@@ -199,9 +205,12 @@ class VegetationField:
                                         VegKind.BUSH, (bx, by, bz), bscale, btint
                                     )
                                 )
-                                self.cell_to_indices.setdefault(
-                                    cell_index_for(bx, bz), []
-                                ).append(idx)
+                                cell = cell_index_for(bx, bz)
+                                bucket = self.cell_to_indices[cell]
+                                if bucket is None:
+                                    bucket = []
+                                    self.cell_to_indices[cell] = bucket
+                                bucket.append(idx)
                                 bushes += 1
                 else:
                     # OCEAN: kelp near shores (shallow-ish water).
@@ -222,7 +231,10 @@ class VegetationField:
                             self.instances.append(
                                 VegetationInstance(VegKind.KELP, (x, y, z), scale, tint)
                             )
-                            self.cell_to_indices.setdefault(
-                                cell_index_for(x, z), []
-                            ).append(idx)
+                            cell = cell_index_for(x, z)
+                            bucket = self.cell_to_indices[cell]
+                            if bucket is None:
+                                bucket = []
+                                self.cell_to_indices[cell] = bucket
+                            bucket.append(idx)
                             kelp += 1

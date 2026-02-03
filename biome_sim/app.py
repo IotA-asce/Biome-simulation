@@ -518,8 +518,8 @@ def run() -> None:
                         pygame.draw.polygon(draw_surf, col, pts)
 
                     if show_vegetation:
-                        ids = veg_cells.get(cell)
-                        if ids:
+                        ids = veg_cells[cell]
+                        if ids is not None:
                             for vidx in ids:
                                 inst = veg_instances[vidx]
                                 if inst.kind == VegKind.KELP:
@@ -596,8 +596,8 @@ def run() -> None:
                     pygame.draw.polygon(draw_surf, col, pts)
 
                 if show_vegetation:
-                    ids = veg_cells.get(cell)
-                    if ids:
+                    ids = veg_cells[cell]
+                    if ids is not None:
                         for vidx in ids:
                             inst = veg_instances[vidx]
                             if inst.kind == VegKind.TREE:
