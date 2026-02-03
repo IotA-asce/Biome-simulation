@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
+from math import cos, pi, sin, sqrt
 
 from biome_sim.core.prng import Mulberry32
 
@@ -12,26 +12,26 @@ from biome_sim.noise.perlin2d import FbmOptions, Perlin2D
 class TerrainParams:
     seed: int
     size: float = 220.0
-    grid: int = 121
-    amplitude: float = 42.0
-    frequency: float = 2.2
-    sea_level01: float = 0.48
-    octaves: int = 5
+    grid: int = 201
+    amplitude: float = 72.0
+    frequency: float = 2.8
+    sea_level01: float = 0.5
+    octaves: int = 7
     lacunarity: float = 2.0
     persistence: float = 0.5
-    warp: float = 0.55
+    warp: float = 0.85
 
-    # Controlled environment: one main island + several small islands.
-    main_island_radius: float = 0.78
-    main_island_sharpness: float = 1.65
-    small_island_count: int = 7
-    small_island_radius_min: float = 0.06
-    small_island_radius_max: float = 0.14
-    coast_wobble: float = 0.06
-    river_threshold: int = 140
-    river_carve: float = 0.28
-    smooth_iters: int = 2
-    smooth_strength: float = 0.55
+    # Archipelago clustering controls.
+    archipelago_satellite_clusters: int = 3
+    archipelago_warp: float = 0.10
+    archipelago_edge_fade: float = 0.90
+    archipelago_uplift: float = 0.18
+    ocean_depth: float = 0.22
+
+    river_threshold: int = 420
+    river_carve: float = 0.34
+    smooth_iters: int = 1
+    smooth_strength: float = 0.35
 
 
 class Terrain:
@@ -82,6 +82,11 @@ class Terrain:
             lacunarity=self.params.lacunarity,
             persistence=self.params.persistence,
             warp=self.params.warp,
+            archipelago_satellite_clusters=self.params.archipelago_satellite_clusters,
+            archipelago_warp=self.params.archipelago_warp,
+            archipelago_edge_fade=self.params.archipelago_edge_fade,
+            archipelago_uplift=self.params.archipelago_uplift,
+            ocean_depth=self.params.ocean_depth,
             river_threshold=self.params.river_threshold,
             river_carve=self.params.river_carve,
             smooth_iters=self.params.smooth_iters,
@@ -115,89 +120,129 @@ class Terrain:
             t = clamp01((x - a) / (b - a))
             return t * t * (3.0 - 2.0 * t)
 
+        opts_hi = opts
+        opts_warp = FbmOptions(
+            octaves=max(2, int(p.octaves) - 4),
+            lacunarity=2.2,
+            persistence=0.55,
+        )
+
         rng = Mulberry32(p.seed ^ 0x9E3779B9)
-        small_islands: list[tuple[float, float, float, float]] = []
-        # island: (cx, cz, radius, strength) in normalized [-1, 1] coords.
-        for _ in range(max(0, int(p.small_island_count))):
-            for _attempt in range(20):
-                cx = rng.random() * 2.0 - 1.0
-                cz = rng.random() * 2.0 - 1.0
-                d = sqrt(cx * cx + cz * cz)
-                # Keep small islands away from the main island core.
-                if d < p.main_island_radius * 0.82:
-                    continue
-                if d > 0.98:
-                    continue
-                rad = (
-                    p.small_island_radius_min
-                    + (p.small_island_radius_max - p.small_island_radius_min)
-                    * rng.random()
-                )
-                strength = 0.55 + 0.65 * rng.random()
-                small_islands.append((cx, cz, rad, strength))
-                break
+
+        # Blob clusters (in normalized [-1, 1] coords) to encourage one large landmass
+        # with nearby island clusters, while still letting Perlin shape the terrain.
+        blobs: list[tuple[float, float, float, float]] = []
+        # (cx, cz, radius, weight)
+        main_blob_count = 9
+        for _ in range(main_blob_count):
+            ang = rng.random() * 2.0 * pi
+            dist = (rng.random() ** 0.65) * 0.22
+            cx = cos(ang) * dist
+            cz = sin(ang) * dist
+            rad = 0.48 + 0.30 * rng.random()
+            wgt = 0.75 + 0.55 * rng.random()
+            blobs.append((cx, cz, rad, wgt))
+
+        for _ in range(max(0, int(p.archipelago_satellite_clusters))):
+            ang = rng.random() * 2.0 * pi
+            dist = 0.58 + 0.26 * rng.random()
+            scx = cos(ang) * dist
+            scz = sin(ang) * dist
+            for _j in range(4):
+                ang2 = rng.random() * 2.0 * pi
+                dist2 = rng.random() * 0.18
+                cx = scx + cos(ang2) * dist2
+                cz = scz + sin(ang2) * dist2
+                rad = 0.16 + 0.18 * rng.random()
+                wgt = 0.55 + 0.70 * rng.random()
+                blobs.append((cx, cz, rad, wgt))
+
+        def blob_value(u: float, v: float, cx: float, cz: float, rad: float) -> float:
+            d = sqrt((u - cx) * (u - cx) + (v - cz) * (v - cz))
+            t = clamp01(1.0 - (d / max(1e-6, rad)))
+            t = smoothstep(0.0, 1.0, t)
+            return t
 
         for r in range(g):
             row01: list[float] = []
             z = self._z[r]
+            uz = z / half
+            nz = (z / p.size) * p.frequency
+
             for c in range(g):
                 x = self._x[c]
                 ux = x / half
-                uz = z / half
                 nx = (x / p.size) * p.frequency
-                nz = (z / p.size) * p.frequency
 
-                # Domain warp: avoids the “perfect grid noise” look.
-                wx = self._perlin.fbm(nx * 0.65 + 13.1, nz * 0.65 - 9.7, opts) * p.warp
-                wz = self._perlin.fbm(nx * 0.65 - 7.4, nz * 0.65 + 11.9, opts) * p.warp
+                # Domain warp for terrain.
+                wx = (
+                    self._perlin.fbm(nx * 0.65 + 13.1, nz * 0.65 - 9.7, opts_warp)
+                    * p.warp
+                )
+                wz = (
+                    self._perlin.fbm(nx * 0.65 - 7.4, nz * 0.65 + 11.9, opts_warp)
+                    * p.warp
+                )
                 nx2 = nx + wx
                 nz2 = nz + wz
 
-                # Coastline wobble for less-perfect circles.
-                coast_n = self._perlin.fbm(nx2 * 1.7 + 220.0, nz2 * 1.7 - 220.0, opts)
-                d0 = sqrt(ux * ux + uz * uz) + coast_n * p.coast_wobble
-                main = clamp01(1.0 - (d0 / max(1e-6, p.main_island_radius)))
-                main = smoothstep(0.0, 1.0, main) ** p.main_island_sharpness
-
-                small = 0.0
-                for cx, cz, rad, strength in small_islands:
-                    dx = ux - cx
-                    dz = uz - cz
-                    di = sqrt(dx * dx + dz * dz)
-                    s = clamp01(1.0 - (di / max(1e-6, rad)))
-                    s = smoothstep(0.0, 1.0, s) ** 1.35
-                    s *= strength
-                    if s > small:
-                        small = s
-
-                land = max(main, small)
-                land = clamp01(land)
-                land_mask = smoothstep(0.05, 0.85, land)
-
-                hills = self._perlin.noise01(nx2 * 1.05 + 200.0, nz2 * 1.05 - 200.0)
-                hills = hills**1.35
-                detail = self._perlin.noise01(nx2 * 2.3 - 40.0, nz2 * 2.3 + 40.0)
-
-                range_mask = self._perlin.noise01(
-                    nx2 * 0.55 + 700.0, nz2 * 0.55 - 700.0
+                # Cluster mask for "one big island + nearby clusters".
+                cu = ux + (
+                    self._perlin.fbm(ux * 2.1 + 91.0, uz * 2.1 - 73.0, opts_warp)
+                    * p.archipelago_warp
                 )
-                range_mask = smoothstep(0.56, 0.78, range_mask)
-                mountains = self._perlin.ridged_fbm(
-                    nx2 * 1.55 + 520.0, nz2 * 1.55 - 520.0, opts
+                cv = uz + (
+                    self._perlin.fbm(ux * 2.1 - 31.0, uz * 2.1 + 51.0, opts_warp)
+                    * p.archipelago_warp
                 )
-                mountains = (mountains**1.35) * range_mask
+                cluster = 0.0
+                for cx, cz, rad, wgt in blobs:
+                    b = blob_value(cu, cv, cx, cz, rad) ** 1.35
+                    b = clamp01(b * wgt)
+                    cluster = 1.0 - (1.0 - cluster) * (1.0 - b)
 
-                # Ocean bathymetry (seabed variation) + land elevation.
-                ocean = 1.0 - land_mask
-                seabed = self._perlin.noise01(nx2 * 0.45 - 1100.0, nz2 * 0.45 + 1100.0)
-                ocean_depth = (ocean**1.55) * (0.30 + 0.22 * seabed)
-                ocean_h01 = p.sea_level01 - ocean_depth
+                # Fade clusters near the map edge so the archipelago stays grouped.
+                if p.archipelago_edge_fade < 1.0:
+                    d_edge = sqrt(ux * ux + uz * uz)
+                    t_edge = clamp01(
+                        (d_edge - p.archipelago_edge_fade)
+                        / (1.0 - p.archipelago_edge_fade)
+                    )
+                    edge = 1.0 - (t_edge * t_edge * (3.0 - 2.0 * t_edge))
+                    cluster *= edge
+                cluster = clamp01(cluster)
 
-                land_elev = land_mask * (
-                    0.06 + 0.45 * hills + 0.62 * mountains + 0.06 * detail
+                # Terrain noise (generate height first; sea level applied afterwards).
+                macro = self._perlin.fbm(
+                    nx2 * 0.22 + 1000.0, nz2 * 0.22 - 1000.0, opts_warp
                 )
-                h01 = ocean_h01 + land_elev
-                h01 = clamp01(h01)
+                hills = self._perlin.fbm(
+                    nx2 * 0.88 + 200.0, nz2 * 0.88 - 200.0, opts_hi
+                )
+                detail = self._perlin.fbm(nx2 * 3.25 - 40.0, nz2 * 3.25 + 40.0, opts_hi)
+
+                range_n = self._perlin.noise01(nx2 * 0.42 + 700.0, nz2 * 0.42 - 700.0)
+                range_mask = smoothstep(0.55, 0.80, range_n)
+                ridge = self._perlin.ridged_fbm(
+                    nx2 * 1.55 + 520.0, nz2 * 1.55 - 520.0, opts_hi
+                )
+                mountains = max(0.0, ridge - 0.35) ** 1.35
+                mountains *= range_mask
+
+                seabed = self._perlin.fbm(
+                    nx2 * 0.35 - 1100.0, nz2 * 0.35 + 1100.0, opts_warp
+                )
+
+                dh = (macro * 0.10) + (hills * 0.18) + (detail * 0.06)
+                dh += mountains * (0.44 + 0.30 * cluster)
+                dh += cluster * p.archipelago_uplift
+
+                # Encourage land inside clusters; push ocean down outside.
+                dh *= 0.20 + 1.80 * cluster
+                dh -= (1.0 - cluster) ** 1.60 * p.ocean_depth
+                dh += seabed * 0.05 * (1.0 - cluster)
+
+                h01 = clamp01(p.sea_level01 + dh)
                 row01.append(h01)
             heights01.append(row01)
 
@@ -375,23 +420,32 @@ class Terrain:
             sea = p.sea_level01
             slope = 1.0 - max(0.0, min(1.0, nrm_y))
 
-            if h01 < sea + 0.018:
-                base = (184, 173, 124)  # sand
-            elif h01 < sea + 0.16:
-                base = (44, 96, 52)  # grass
-            elif h01 < 0.72:
-                base = (54, 110, 62)  # upland
-            elif h01 < 0.86:
-                base = (112, 104, 92)  # rock
+            # Normalize elevation above sea into [0, 1] so bands stay stable
+            # even if sea_level01 changes.
+            t = 0.0
+            if h01 > sea:
+                t = (h01 - sea) / max(1e-6, 1.0 - sea)
+                t = clamp01(t)
+
+            if t < 0.04:
+                base = (188, 176, 120)  # beach sand
+            elif t < 0.28:
+                base = (46, 104, 58)  # plains
+            elif t < 0.52:
+                base = (52, 114, 64)  # upland
+            elif t < 0.78:
+                base = (116, 108, 98)  # rock
             else:
-                base = (235, 240, 246)  # snow
+                base = (236, 241, 247)  # snow
 
-            if slope > 0.20:
-                base = lerp_col(base, (50, 48, 44), (slope - 0.20) * 1.2)
+            # Expose rock on steep slopes.
+            if slope > 0.25 and t > 0.10:
+                base = lerp_col(base, (74, 70, 64), clamp01((slope - 0.25) * 1.6))
 
-            if yavg < 8.0:
+            # Slight warming near sea level.
+            if yavg < 10.0:
                 base = lerp_col(
-                    base, (128, 120, 92), clamp01((8.0 - yavg) / 18.0) * 0.25
+                    base, (132, 122, 92), clamp01((10.0 - yavg) / 22.0) * 0.22
                 )
             return base
 

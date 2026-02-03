@@ -253,7 +253,8 @@ def run() -> None:
         water_steps = 18
         wstep = (half * 2.0) / (water_steps - 1)
 
-        water_base = (26, 96, 148)
+        # Brighter ocean so it reads clearly in surface view.
+        water_base = (24, 118, 190)
         water_alpha = 160
 
         for wr in range(water_steps - 1):
