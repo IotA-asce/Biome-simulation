@@ -315,46 +315,47 @@ def run() -> None:
             zavg = zsum / 3.0
             out.append((zavg, pts, apply_fog(base_col, zavg)))
 
-        # Volumetric look: add skirts (vertical walls) around the terrain bounds.
+        # Volumetric look: skirts are only useful in underwater view.
         skirt_polys: list[
             tuple[float, list[tuple[float, float]], tuple[int, int, int]]
         ] = []
-        base_y = terrain.base_y
-        skirt_base = (36, 34, 30)
-        if base_y < -1.0:
-            for c in range(g - 1):
-                # North (r=0)
-                a = verts[0 * g + c]
-                b = verts[0 * g + (c + 1)]
-                qa = (a[0], base_y, a[2])
-                qb = (b[0], base_y, b[2])
-                push_tri((a, b, qb), skirt_base, skirt_polys)
-                push_tri((a, qb, qa), skirt_base, skirt_polys)
+        if show_underwater:
+            base_y = terrain.base_y
+            skirt_base = (36, 34, 30)
+            if base_y < -1.0:
+                for c in range(g - 1):
+                    # North (r=0)
+                    a = verts[0 * g + c]
+                    b = verts[0 * g + (c + 1)]
+                    qa = (a[0], base_y, a[2])
+                    qb = (b[0], base_y, b[2])
+                    push_tri((a, b, qb), skirt_base, skirt_polys)
+                    push_tri((a, qb, qa), skirt_base, skirt_polys)
 
-                # South (r=g-1)
-                a = verts[(g - 1) * g + c]
-                b = verts[(g - 1) * g + (c + 1)]
-                qa = (a[0], base_y, a[2])
-                qb = (b[0], base_y, b[2])
-                push_tri((a, qb, b), skirt_base, skirt_polys)
-                push_tri((a, qa, qb), skirt_base, skirt_polys)
+                    # South (r=g-1)
+                    a = verts[(g - 1) * g + c]
+                    b = verts[(g - 1) * g + (c + 1)]
+                    qa = (a[0], base_y, a[2])
+                    qb = (b[0], base_y, b[2])
+                    push_tri((a, qb, b), skirt_base, skirt_polys)
+                    push_tri((a, qa, qb), skirt_base, skirt_polys)
 
-            for r in range(g - 1):
-                # West (c=0)
-                a = verts[r * g + 0]
-                b = verts[(r + 1) * g + 0]
-                qa = (a[0], base_y, a[2])
-                qb = (b[0], base_y, b[2])
-                push_tri((a, qb, b), skirt_base, skirt_polys)
-                push_tri((a, qa, qb), skirt_base, skirt_polys)
+                for r in range(g - 1):
+                    # West (c=0)
+                    a = verts[r * g + 0]
+                    b = verts[(r + 1) * g + 0]
+                    qa = (a[0], base_y, a[2])
+                    qb = (b[0], base_y, b[2])
+                    push_tri((a, qb, b), skirt_base, skirt_polys)
+                    push_tri((a, qa, qb), skirt_base, skirt_polys)
 
-                # East (c=g-1)
-                a = verts[r * g + (g - 1)]
-                b = verts[(r + 1) * g + (g - 1)]
-                qa = (a[0], base_y, a[2])
-                qb = (b[0], base_y, b[2])
-                push_tri((a, b, qb), skirt_base, skirt_polys)
-                push_tri((a, qb, qa), skirt_base, skirt_polys)
+                    # East (c=g-1)
+                    a = verts[r * g + (g - 1)]
+                    b = verts[(r + 1) * g + (g - 1)]
+                    qa = (a[0], base_y, a[2])
+                    qb = (b[0], base_y, b[2])
+                    push_tri((a, b, qb), skirt_base, skirt_polys)
+                    push_tri((a, qb, qa), skirt_base, skirt_polys)
 
         if show_underwater:
             # Underwater seabed pass (drawn under the water surface).

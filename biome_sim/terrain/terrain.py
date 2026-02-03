@@ -13,25 +13,25 @@ class TerrainParams:
     seed: int
     size: float = 220.0
     grid: int = 201
-    amplitude: float = 72.0
-    frequency: float = 2.8
+    amplitude: float = 58.0
+    frequency: float = 2.45
     sea_level01: float = 0.5
-    octaves: int = 7
+    octaves: int = 6
     lacunarity: float = 2.0
     persistence: float = 0.5
-    warp: float = 0.85
+    warp: float = 0.90
 
     # Archipelago clustering controls.
     archipelago_satellite_clusters: int = 3
-    archipelago_warp: float = 0.10
+    archipelago_warp: float = 0.14
     archipelago_edge_fade: float = 0.90
-    archipelago_uplift: float = 0.18
-    ocean_depth: float = 0.22
+    archipelago_uplift: float = 0.0
+    ocean_depth: float = 0.20
 
-    river_threshold: int = 420
+    river_threshold: int = 520
     river_carve: float = 0.34
-    smooth_iters: int = 1
-    smooth_strength: float = 0.35
+    smooth_iters: int = 0
+    smooth_strength: float = 0.0
 
 
 class Terrain:
@@ -211,6 +211,8 @@ class Terrain:
                     edge = 1.0 - (t_edge * t_edge * (3.0 - 2.0 * t_edge))
                     cluster *= edge
                 cluster = clamp01(cluster)
+                # Treat this primarily as a land-distribution field (helps avoid dome-like islands).
+                cluster = smoothstep(0.20, 0.60, cluster)
 
                 # Terrain noise (generate height first; sea level applied afterwards).
                 macro = self._perlin.fbm(
@@ -233,15 +235,22 @@ class Terrain:
                     nx2 * 0.35 - 1100.0, nz2 * 0.35 + 1100.0, opts_warp
                 )
 
-                dh = (macro * 0.10) + (hills * 0.18) + (detail * 0.06)
-                dh += mountains * (0.44 + 0.30 * cluster)
-                dh += cluster * p.archipelago_uplift
+                # Turn the cluster field into an organic shoreline mask.
+                coast_n = self._perlin.fbm(
+                    nx2 * 0.85 + 333.0, nz2 * 0.85 - 333.0, opts_warp
+                )
+                cluster_w = clamp01(cluster + coast_n * 0.18)
+                land_mask = smoothstep(0.45, 0.55, cluster_w)
+                coast_mask = land_mask**1.45
 
-                # Encourage land inside clusters; push ocean down outside.
-                dh *= 0.20 + 1.80 * cluster
-                dh -= (1.0 - cluster) ** 1.60 * p.ocean_depth
-                dh += seabed * 0.05 * (1.0 - cluster)
+                # Height-first: build a detailed heightfield, then sea-level decides water/land.
+                base = (macro * 0.06) + (hills * 0.16) + (detail * 0.07)
+                land_dh = coast_mask * (0.05 + base) + mountains * (land_mask * 0.20)
 
+                ocean = 1.0 - land_mask
+                ocean_dh = -(ocean**1.35) * p.ocean_depth + seabed * (0.05 * ocean)
+
+                dh = land_dh + ocean_dh
                 h01 = clamp01(p.sea_level01 + dh)
                 row01.append(h01)
             heights01.append(row01)
