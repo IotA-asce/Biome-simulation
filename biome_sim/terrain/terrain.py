@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import sqrt
 
 from biome_sim.noise.perlin2d import FbmOptions, Perlin2D
 
@@ -9,7 +10,7 @@ from biome_sim.noise.perlin2d import FbmOptions, Perlin2D
 class TerrainParams:
     seed: int
     size: float = 220.0
-    grid: int = 81
+    grid: int = 121
     amplitude: float = 42.0
     frequency: float = 2.2
     sea_level01: float = 0.48
@@ -32,6 +33,14 @@ class Terrain:
         self.height_min: float = 0.0
         self.height_max: float = 0.0
         self.river_edges: list[tuple[int, int, int]] = []
+
+        # Cached mesh data for rendering.
+        self.vertices_flat: list[tuple[float, float, float]] = []
+        self.h01_flat: list[float] = []
+        self.tri_indices: list[tuple[int, int, int]] = []
+        self.tri_normal: list[tuple[float, float, float]] = []
+        self.tri_base_color: list[tuple[int, int, int]] = []
+        self.tri_minmax_y: list[tuple[float, float]] = []
         self.regenerate(params.seed)
 
     @property
@@ -145,6 +154,138 @@ class Terrain:
         self.height_max = max_y
 
         self._compute_rivers()
+        self._build_render_cache()
+
+    def _build_render_cache(self) -> None:
+        p = self.params
+        g = p.grid
+        n = g * g
+
+        def clamp01(v: float) -> float:
+            if v < 0.0:
+                return 0.0
+            if v > 1.0:
+                return 1.0
+            return v
+
+        def lerp(a: float, b: float, t: float) -> float:
+            return a + (b - a) * t
+
+        def lerp_col(
+            a: tuple[int, int, int], b: tuple[int, int, int], t: float
+        ) -> tuple[int, int, int]:
+            tt = clamp01(t)
+            return (
+                int(lerp(a[0], b[0], tt)),
+                int(lerp(a[1], b[1], tt)),
+                int(lerp(a[2], b[2], tt)),
+            )
+
+        def dot(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+        def sub(
+            a: tuple[float, float, float], b: tuple[float, float, float]
+        ) -> tuple[float, float, float]:
+            return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+        def cross(
+            a: tuple[float, float, float], b: tuple[float, float, float]
+        ) -> tuple[float, float, float]:
+            return (
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            )
+
+        def normalize(v: tuple[float, float, float]) -> tuple[float, float, float]:
+            nn = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            if nn == 0.0:
+                return (0.0, 1.0, 0.0)
+            return (v[0] / nn, v[1] / nn, v[2] / nn)
+
+        def land_base_color(
+            yavg: float, h01: float, nrm_y: float
+        ) -> tuple[int, int, int]:
+            sea = p.sea_level01
+            slope = 1.0 - max(0.0, min(1.0, nrm_y))
+
+            if h01 < sea + 0.018:
+                base = (184, 173, 124)  # sand
+            elif h01 < sea + 0.16:
+                base = (44, 96, 52)  # grass
+            elif h01 < 0.72:
+                base = (54, 110, 62)  # upland
+            elif h01 < 0.86:
+                base = (112, 104, 92)  # rock
+            else:
+                base = (235, 240, 246)  # snow
+
+            if slope > 0.20:
+                base = lerp_col(base, (50, 48, 44), (slope - 0.20) * 1.2)
+
+            if yavg < 8.0:
+                base = lerp_col(
+                    base, (128, 120, 92), clamp01((8.0 - yavg) / 18.0) * 0.25
+                )
+            return base
+
+        verts: list[tuple[float, float, float]] = [(0.0, 0.0, 0.0)] * n
+        h01f: list[float] = [0.0] * n
+        for r in range(g):
+            for c in range(g):
+                i = r * g + c
+                y = self._heights[r][c]
+                verts[i] = (self._x[c], y, self._z[r])
+                h01f[i] = self._heights01[r][c]
+
+        tri_idx: list[tuple[int, int, int]] = []
+        tri_nrm: list[tuple[float, float, float]] = []
+        tri_col: list[tuple[int, int, int]] = []
+        tri_mm: list[tuple[float, float]] = []
+
+        for r in range(g - 1):
+            for c in range(g - 1):
+                i00 = r * g + c
+                i10 = r * g + (c + 1)
+                i01 = (r + 1) * g + c
+                i11 = (r + 1) * g + (c + 1)
+
+                # Two triangles per cell.
+                for ia, ib, ic in ((i00, i11, i10), (i00, i01, i11)):
+                    a = verts[ia]
+                    b = verts[ib]
+                    c0 = verts[ic]
+                    u = sub(b, a)
+                    v = sub(c0, a)
+                    nrm0 = normalize(cross(u, v))
+
+                    # Keep normals pointing upward for stable shading.
+                    if nrm0[1] < 0.0:
+                        ib, ic = ic, ib
+                        b = verts[ib]
+                        c0 = verts[ic]
+                        u = sub(b, a)
+                        v = sub(c0, a)
+                        nrm0 = normalize(cross(u, v))
+
+                    h01 = (h01f[ia] + h01f[ib] + h01f[ic]) / 3.0
+                    yavg = (a[1] + b[1] + c0[1]) / 3.0
+                    base = land_base_color(yavg, h01, nrm0[1])
+                    miny = min(a[1], b[1], c0[1])
+                    maxy = max(a[1], b[1], c0[1])
+
+                    tri_idx.append((ia, ib, ic))
+                    tri_nrm.append(nrm0)
+                    tri_col.append(base)
+                    tri_mm.append((miny, maxy))
+
+        self.vertices_flat = verts
+        self.h01_flat = h01f
+        self.tri_indices = tri_idx
+        self.tri_normal = tri_nrm
+        self.tri_base_color = tri_col
+        self.tri_minmax_y = tri_mm
 
     def _compute_rivers(self) -> None:
         p = self.params

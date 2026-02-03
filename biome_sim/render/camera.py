@@ -35,6 +35,33 @@ def _normalize(v: tuple[float, float, float]) -> tuple[float, float, float]:
     return (v[0] / n, v[1] / n, v[2] / n)
 
 
+@dataclass(frozen=True)
+class CameraFrame:
+    w: int
+    h: int
+    near: float
+    f: float
+    cam_pos: tuple[float, float, float]
+    right: tuple[float, float, float]
+    up: tuple[float, float, float]
+    forward: tuple[float, float, float]
+
+    def project(
+        self, p: tuple[float, float, float]
+    ) -> tuple[float, float, float] | None:
+        d = _sub(p, self.cam_pos)
+        cx = _dot(d, self.right)
+        cy = _dot(d, self.up)
+        cz = _dot(d, self.forward)
+
+        if cz <= self.near:
+            return None
+
+        sx = (self.w * 0.5) + (cx * self.f) / cz
+        sy = (self.h * 0.5) - (cy * self.f) / cz
+        return (sx, sy, cz)
+
+
 @dataclass
 class OrbitCamera:
     target: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -56,23 +83,23 @@ class OrbitCamera:
         p: tuple[float, float, float],
         viewport: tuple[int, int],
     ) -> tuple[float, float, float] | None:
+        return self.frame(viewport).project(p)
+
+    def frame(self, viewport: tuple[int, int]) -> CameraFrame:
         w, h = viewport
         cam_pos = self.position()
-
         forward = _normalize(_sub(self.target, cam_pos))
         world_up = (0.0, 1.0, 0.0)
         right = _normalize(_cross(forward, world_up))
         up = _cross(right, forward)
-
-        d = _sub(p, cam_pos)
-        cx = _dot(d, right)
-        cy = _dot(d, up)
-        cz = _dot(d, forward)
-
-        if cz <= self.near:
-            return None
-
         f = (h * 0.5) / tan((self.fov_deg * 0.5) * 3.141592653589793 / 180.0)
-        sx = (w * 0.5) + (cx * f) / cz
-        sy = (h * 0.5) - (cy * f) / cz
-        return (sx, sy, cz)
+        return CameraFrame(
+            w=w,
+            h=h,
+            near=self.near,
+            f=f,
+            cam_pos=cam_pos,
+            right=right,
+            up=up,
+            forward=forward,
+        )

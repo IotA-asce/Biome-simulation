@@ -38,6 +38,7 @@ Tests:
 - `Arrow keys` orbit camera
 - `R` regenerate terrain (new seed)
 - `G` toggle wireframe overlay
+- `P` cycle performance scaling
 - `Esc` quit
 
 ## Repo Notes
