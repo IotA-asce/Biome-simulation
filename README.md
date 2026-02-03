@@ -4,8 +4,9 @@ Iterative biome simulation built in public (episode-by-episode). Current focus: 
 
 ## Status
 
-- Terrain: seeded Perlin fBm heightfield
-- Rendering: pygame window + orbit camera + wireframe terrain
+- Terrain: seeded Perlin fBm heightfield with mountains/hills + sea level
+- Water: ocean/lakes by sea level + generated river network
+- Rendering: pygame window + orbit camera + solid terrain (painter's algorithm)
 - Tests: deterministic noise unit tests (pytest)
 
 ## Local Dev
@@ -36,7 +37,7 @@ Tests:
 - `Mouse wheel` zoom
 - `Arrow keys` orbit camera
 - `R` regenerate terrain (new seed)
-- `G` toggle wireframe (placeholder toggle)
+- `G` toggle wireframe overlay
 - `Esc` quit
 
 ## Repo Notes

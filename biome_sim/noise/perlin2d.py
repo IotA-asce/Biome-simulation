@@ -74,3 +74,29 @@ class Perlin2D:
         if amp_sum == 0.0:
             return 0.0
         return s / amp_sum
+
+    def noise01(self, x: float, y: float) -> float:
+        # Map from ~[-1, 1] to ~[0, 1].
+        return (self.noise(x, y) + 1.0) * 0.5
+
+    def ridged_fbm(self, x: float, y: float, opts: FbmOptions) -> float:
+        # Ridged multifractal-ish: invert abs(noise) to get sharp creases.
+        octaves = max(1, int(opts.octaves))
+        freq = 1.0
+        amp = 1.0
+        s = 0.0
+        amp_sum = 0.0
+
+        for _ in range(octaves):
+            n = self.noise(x * freq, y * freq)
+            r = 1.0 - abs(n)
+            r = r * r
+            s += r * amp
+            amp_sum += amp
+            freq *= float(opts.lacunarity)
+            amp *= float(opts.persistence)
+
+        if amp_sum == 0.0:
+            return 0.0
+        # Already in ~[0, 1]
+        return s / amp_sum
