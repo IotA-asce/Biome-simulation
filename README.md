@@ -6,6 +6,7 @@ Iterative biome simulation built in public (episode-by-episode). Current focus: 
 
 - Terrain: organic heightfield (warped fBm + ridged mountains) with clustered archipelago
 - Water: global sea level + beaches + rivers (underwater view available)
+- Vegetation: trees/bushes on land + kelp in shallow water
 - Rendering: pygame window + orbit camera + solid terrain (painter's algorithm)
 - Tests: deterministic noise unit tests (pytest)
 
@@ -37,6 +38,7 @@ Tests:
 - `Mouse wheel` zoom
 - `Arrow keys` orbit camera
 - `R` regenerate terrain (new seed)
+- `V` toggle vegetation
 - `G` toggle wireframe overlay
 - `U` toggle underwater view
 - `P` cycle performance scaling

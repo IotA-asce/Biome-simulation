@@ -9,6 +9,7 @@ import pygame
 from biome_sim.core.prng import Mulberry32
 from biome_sim.render.camera import OrbitCamera
 from biome_sim.terrain.terrain import Terrain, TerrainParams
+from biome_sim.vegetation.vegetation import VegKind, VegetationField
 
 
 def _random_seed() -> int:
@@ -28,6 +29,7 @@ def run() -> None:
 
     seed = _random_seed()
     terrain = Terrain(TerrainParams(seed=seed))
+    vegetation = VegetationField(terrain)
 
     cam = OrbitCamera(
         target=(0.0, 0.0, 0.0), yaw=0.9, pitch=0.55, distance=165.0, fov_deg=62.0
@@ -35,6 +37,7 @@ def run() -> None:
 
     show_wireframe = False
     show_underwater = False
+    show_vegetation = True
     render_scale = 0.75
     render_surface: pygame.Surface | None = None
     water_layer: pygame.Surface | None = None
@@ -118,6 +121,9 @@ def run() -> None:
     tri_mm = terrain.tri_minmax_y
     tri_avg_y = terrain.tri_avg_y
 
+    veg_instances = vegetation.instances
+    veg_cells = vegetation.cell_to_indices
+
     proj_ok = [False] * (g * g)
     proj = [(0.0, 0.0, 0.0)] * (g * g)
 
@@ -134,9 +140,12 @@ def run() -> None:
             tri_mm, \
             tri_avg_y, \
             proj_ok, \
-            proj
+            proj, \
+            veg_instances, \
+            veg_cells
         seed = _random_seed()
         terrain.regenerate(seed)
+        vegetation.regenerate(terrain)
 
         g = terrain.params.grid
         verts = terrain.vertices_flat
@@ -145,6 +154,9 @@ def run() -> None:
         tri_base = terrain.tri_base_color
         tri_mm = terrain.tri_minmax_y
         tri_avg_y = terrain.tri_avg_y
+
+        veg_instances = vegetation.instances
+        veg_cells = vegetation.cell_to_indices
 
         proj_ok = [False] * (g * g)
         proj = [(0.0, 0.0, 0.0)] * (g * g)
@@ -165,6 +177,8 @@ def run() -> None:
                     show_wireframe = not show_wireframe
                 elif event.key == pygame.K_u:
                     show_underwater = not show_underwater
+                elif event.key == pygame.K_v:
+                    show_vegetation = not show_vegetation
                 elif event.key == pygame.K_p:
                     # Cycle render scale for performance.
                     if render_scale > 0.9:
@@ -295,6 +309,101 @@ def run() -> None:
             deep = (8, 22, 28)
             return lerp_col(shallow, deep, depth)
 
+        def veg_lod_skip(idx: int, z: float) -> bool:
+            if z > 420.0:
+                return True
+            if z > 320.0 and (idx % 3) != 0:
+                return True
+            if z > 240.0 and (idx % 2) != 0:
+                return True
+            return False
+
+        def veg_tint(
+            base: tuple[int, int, int], tint: int, max_tint: int
+        ) -> tuple[int, int, int]:
+            if max_tint <= 0:
+                return base
+            k = 0.82 + (tint / max_tint) * 0.32
+            return col_mul(base, k)
+
+        def draw_tree(
+            idx: int, inst_pos: tuple[float, float, float], scale: float, tint: int
+        ) -> None:
+            x, y, z = inst_pos
+            h = 4.5 + 7.5 * scale
+            base_p = (x, y, z)
+            top_p = (x, y + h, z)
+            sb = frame.project(base_p)
+            st = frame.project(top_p)
+            if sb is None or st is None:
+                return
+            if veg_lod_skip(idx, sb[2]):
+                return
+            screen_h = sb[1] - st[1]
+            if screen_h < 3.0:
+                return
+
+            trunk_w = max(1, int(screen_h * 0.06))
+            trunk_end_y = sb[1] - screen_h * 0.42
+            trunk_col = apply_fog((78, 62, 44), sb[2])
+            pygame.draw.line(
+                draw_surf,
+                trunk_col,
+                (sb[0], sb[1]),
+                (sb[0], trunk_end_y),
+                trunk_w,
+            )
+
+            canopy = veg_tint((42, 112, 64), tint, 6)
+            canopy = apply_fog(canopy, sb[2])
+            w0 = screen_h * 0.23
+            base_y = sb[1] - screen_h * 0.18
+            tri1 = [(st[0], st[1]), (st[0] - w0, base_y), (st[0] + w0, base_y)]
+            pygame.draw.polygon(draw_surf, canopy, tri1)
+
+            # Second layer for a fuller crown.
+            top2_y = st[1] + screen_h * 0.18
+            base2_y = sb[1] - screen_h * 0.02
+            w2 = w0 * 1.12
+            tri2 = [(st[0], top2_y), (st[0] - w2, base2_y), (st[0] + w2, base2_y)]
+            pygame.draw.polygon(draw_surf, canopy, tri2)
+
+        def draw_bush(
+            idx: int, inst_pos: tuple[float, float, float], scale: float, tint: int
+        ) -> None:
+            x, y, z = inst_pos
+            h = 1.2 + 2.4 * scale
+            sb = frame.project((x, y, z))
+            st = frame.project((x, y + h, z))
+            if sb is None or st is None:
+                return
+            if veg_lod_skip(idx, sb[2]):
+                return
+            screen_h = sb[1] - st[1]
+            if screen_h < 2.0:
+                return
+            col = veg_tint((52, 132, 74), tint, 8)
+            col = apply_fog(col, sb[2])
+            r = max(1, int(screen_h * 0.42))
+            pygame.draw.circle(draw_surf, col, (int(sb[0]), int(sb[1] - r * 0.65)), r)
+
+        def draw_kelp(
+            idx: int, inst_pos: tuple[float, float, float], scale: float, tint: int
+        ) -> None:
+            x, y, z = inst_pos
+            depth = terrain.water_depth(x, z)
+            h = min(depth * 0.6, 8.0 + 8.0 * scale)
+            sb = frame.project((x, y, z))
+            st = frame.project((x, y + h, z))
+            if sb is None or st is None:
+                return
+            if veg_lod_skip(idx, sb[2]):
+                return
+            col = veg_tint((18, 96, 72), tint, 7)
+            col = apply_fog(col, sb[2])
+            w = max(1, int((sb[1] - st[1]) * 0.06))
+            pygame.draw.line(draw_surf, col, (sb[0], sb[1]), (st[0], st[1]), w)
+
         def push_tri(
             tri3: tuple[
                 tuple[float, float, float],
@@ -408,6 +517,14 @@ def run() -> None:
                         col = apply_fog(col_mul(base, intensity), zavg)
                         pygame.draw.polygon(draw_surf, col, pts)
 
+                    if show_vegetation:
+                        ids = veg_cells.get(cell)
+                        if ids:
+                            for vidx in ids:
+                                inst = veg_instances[vidx]
+                                if inst.kind == VegKind.KELP:
+                                    draw_kelp(vidx, inst.pos, inst.scale, inst.tint)
+
         # Draw skirts after seabed (and before land).
         if skirt_polys:
             skirt_polys.sort(key=lambda it: it[0], reverse=True)
@@ -478,6 +595,16 @@ def run() -> None:
                 for _, pts, col in polys:
                     pygame.draw.polygon(draw_surf, col, pts)
 
+                if show_vegetation:
+                    ids = veg_cells.get(cell)
+                    if ids:
+                        for vidx in ids:
+                            inst = veg_instances[vidx]
+                            if inst.kind == VegKind.TREE:
+                                draw_tree(vidx, inst.pos, inst.scale, inst.tint)
+                            elif inst.kind == VegKind.BUSH:
+                                draw_bush(vidx, inst.pos, inst.scale, inst.tint)
+
         # Rivers: draw on top of terrain.
         river_col = (40, 140, 170)
         for i0, i1, flow in terrain.river_edges:
@@ -534,7 +661,7 @@ def run() -> None:
             f"grid: {terrain.params.grid} x {terrain.params.grid}",
             f"render: {'wireframe overlay' if show_wireframe else 'solid'} | scale: {render_scale:0.2f}",
             f"water view: {'underwater' if show_underwater else 'surface'}",
-            "controls: drag LMB, wheel zoom, R regenerate, G wireframe, U underwater, P perf scale, arrows orbit",
+            "controls: drag LMB, wheel zoom, R regenerate, V vegetation, G wireframe, U underwater, P perf scale",
             f"fps: {fps:0.1f}",
         ]
         y = 10

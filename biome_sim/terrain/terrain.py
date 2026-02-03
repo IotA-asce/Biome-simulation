@@ -40,6 +40,7 @@ class Terrain:
         self._perlin = Perlin2D(params.seed)
         self._heights: list[list[float]] = []
         self._heights01: list[list[float]] = []
+        self._slope01: list[list[float]] = []
         self._x: list[float] = []
         self._z: list[float] = []
         self.height_min: float = 0.0
@@ -64,6 +65,10 @@ class Terrain:
     @property
     def heights01(self) -> list[list[float]]:
         return self._heights01
+
+    @property
+    def slope01(self) -> list[list[float]]:
+        return self._slope01
 
     @property
     def sea_level_y(self) -> float:
@@ -281,8 +286,46 @@ class Terrain:
         self.height_max = max_y
         self.base_y = min(-p.amplitude * 1.35, self.height_min - p.amplitude * 0.20)
 
+        self._compute_slope01()
+
         self._compute_rivers()
         self._build_render_cache()
+
+    def _compute_slope01(self) -> None:
+        p = self.params
+        g = p.grid
+        step = p.size / (g - 1)
+        h = self._heights
+
+        slope: list[list[float]] = []
+        for r in range(g):
+            row: list[float] = []
+            for c in range(g):
+                if c == 0:
+                    dx = (h[r][c + 1] - h[r][c]) / step
+                elif c == g - 1:
+                    dx = (h[r][c] - h[r][c - 1]) / step
+                else:
+                    dx = (h[r][c + 1] - h[r][c - 1]) / (2.0 * step)
+
+                if r == 0:
+                    dz = (h[r + 1][c] - h[r][c]) / step
+                elif r == g - 1:
+                    dz = (h[r][c] - h[r - 1][c]) / step
+                else:
+                    dz = (h[r + 1][c] - h[r - 1][c]) / (2.0 * step)
+
+                # Normal of heightfield ~ (-dx, 1, -dz); y component after normalize:
+                # ny = 1 / sqrt(1 + dx^2 + dz^2)
+                ny = 1.0 / sqrt(1.0 + dx * dx + dz * dz)
+                s01 = 1.0 - ny
+                if s01 < 0.0:
+                    s01 = 0.0
+                if s01 > 1.0:
+                    s01 = 1.0
+                row.append(s01)
+            slope.append(row)
+        self._slope01 = slope
 
     def _smooth_heights01(
         self, src: list[list[float]], iters: int, strength: float
@@ -369,6 +412,40 @@ class Terrain:
         hx0 = h00 + (h10 - h00) * tx
         hx1 = h01 + (h11 - h01) * tx
         return hx0 + (hx1 - hx0) * tz
+
+    def sample_slope(self, x: float, z: float) -> float:
+        p = self.params
+        g = p.grid
+        half = p.size * 0.5
+
+        fx = ((x + half) / p.size) * (g - 1)
+        fz = ((z + half) / p.size) * (g - 1)
+
+        if fx < 0.0:
+            fx = 0.0
+        if fz < 0.0:
+            fz = 0.0
+        if fx > g - 1.001:
+            fx = g - 1.001
+        if fz > g - 1.001:
+            fz = g - 1.001
+
+        x0 = int(fx)
+        z0 = int(fz)
+        x1 = min(g - 1, x0 + 1)
+        z1 = min(g - 1, z0 + 1)
+
+        tx = fx - x0
+        tz = fz - z0
+
+        s00 = self._slope01[z0][x0]
+        s10 = self._slope01[z0][x1]
+        s01 = self._slope01[z1][x0]
+        s11 = self._slope01[z1][x1]
+
+        sx0 = s00 + (s10 - s00) * tx
+        sx1 = s01 + (s11 - s01) * tx
+        return sx0 + (sx1 - sx0) * tz
 
     def water_depth(self, x: float, z: float) -> float:
         # Depth of water column above terrain (0 if land).
