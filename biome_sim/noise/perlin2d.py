@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import floor
 
 from biome_sim.core.prng import Mulberry32, clamp_u32
 
@@ -39,10 +40,13 @@ class Perlin2D:
         self._perm = [p[i & 255] for i in range(512)]
 
     def noise(self, x: float, y: float) -> float:
-        xi = int(x) & 255
-        yi = int(y) & 255
-        xf = x - int(x)
-        yf = y - int(y)
+        # IMPORTANT: use floor (not int) so negative coordinates behave correctly.
+        x0 = floor(x)
+        y0 = floor(y)
+        xi = int(x0) & 255
+        yi = int(y0) & 255
+        xf = x - x0
+        yf = y - y0
 
         u = _fade(xf)
         v = _fade(yf)
@@ -76,8 +80,13 @@ class Perlin2D:
         return s / amp_sum
 
     def noise01(self, x: float, y: float) -> float:
-        # Map from ~[-1, 1] to ~[0, 1].
-        return (self.noise(x, y) + 1.0) * 0.5
+        # Map from ~[-1, 1] to ~[0, 1] and clamp for safety.
+        v = (self.noise(x, y) + 1.0) * 0.5
+        if v < 0.0:
+            return 0.0
+        if v > 1.0:
+            return 1.0
+        return v
 
     def ridged_fbm(self, x: float, y: float, opts: FbmOptions) -> float:
         # Ridged multifractal-ish: invert abs(noise) to get sharp creases.
