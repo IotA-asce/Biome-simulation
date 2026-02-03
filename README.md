@@ -38,6 +38,7 @@ Tests:
 - `Arrow keys` orbit camera
 - `R` regenerate terrain (new seed)
 - `G` toggle wireframe overlay
+- `U` toggle underwater view
 - `P` cycle performance scaling
 - `Esc` quit
 

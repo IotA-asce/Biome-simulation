@@ -20,6 +20,8 @@ class TerrainParams:
     warp: float = 0.55
     river_threshold: int = 140
     river_carve: float = 0.28
+    smooth_iters: int = 2
+    smooth_strength: float = 0.55
 
 
 class Terrain:
@@ -32,6 +34,7 @@ class Terrain:
         self._z: list[float] = []
         self.height_min: float = 0.0
         self.height_max: float = 0.0
+        self.base_y: float = -80.0
         self.river_edges: list[tuple[int, int, int]] = []
 
         # Cached mesh data for rendering.
@@ -41,6 +44,7 @@ class Terrain:
         self.tri_normal: list[tuple[float, float, float]] = []
         self.tri_base_color: list[tuple[int, int, int]] = []
         self.tri_minmax_y: list[tuple[float, float]] = []
+        self.tri_avg_y: list[float] = []
         self.regenerate(params.seed)
 
     @property
@@ -63,9 +67,15 @@ class Terrain:
             grid=self.params.grid,
             amplitude=self.params.amplitude,
             frequency=self.params.frequency,
+            sea_level01=self.params.sea_level01,
             octaves=self.params.octaves,
             lacunarity=self.params.lacunarity,
             persistence=self.params.persistence,
+            warp=self.params.warp,
+            river_threshold=self.params.river_threshold,
+            river_carve=self.params.river_carve,
+            smooth_iters=self.params.smooth_iters,
+            smooth_strength=self.params.smooth_strength,
         )
         self.params = p
         self._perlin = Perlin2D(p.seed)
@@ -135,6 +145,11 @@ class Terrain:
 
         self._heights01 = heights01
 
+        if p.smooth_iters > 0 and p.smooth_strength > 0.0:
+            self._heights01 = self._smooth_heights01(
+                self._heights01, iters=p.smooth_iters, strength=p.smooth_strength
+            )
+
         heights: list[list[float]] = []
         min_y = 1e9
         max_y = -1e9
@@ -152,9 +167,101 @@ class Terrain:
         self._heights = heights
         self.height_min = min_y
         self.height_max = max_y
+        self.base_y = min(-p.amplitude * 1.35, self.height_min - p.amplitude * 0.20)
 
         self._compute_rivers()
         self._build_render_cache()
+
+    def _smooth_heights01(
+        self, src: list[list[float]], iters: int, strength: float
+    ) -> list[list[float]]:
+        # Weighted 3x3 blur kernel (interpolation-like smoothing).
+        # Blend with original so mountains keep some sharpness.
+        p = self.params
+        g = p.grid
+
+        def clamp01(v: float) -> float:
+            if v < 0.0:
+                return 0.0
+            if v > 1.0:
+                return 1.0
+            return v
+
+        def smoothstep(a: float, b: float, x: float) -> float:
+            if a == b:
+                return 0.0
+            t = clamp01((x - a) / (b - a))
+            return t * t * (3.0 - 2.0 * t)
+
+        out = [row[:] for row in src]
+        k = clamp01(strength)
+        for _ in range(max(0, int(iters))):
+            tmp = [row[:] for row in out]
+            for r in range(1, g - 1):
+                for c in range(1, g - 1):
+                    # Kernel:
+                    # 1 2 1
+                    # 2 4 2   / 16
+                    # 1 2 1
+                    s = (
+                        tmp[r - 1][c - 1]
+                        + 2.0 * tmp[r - 1][c]
+                        + tmp[r - 1][c + 1]
+                        + 2.0 * tmp[r][c - 1]
+                        + 4.0 * tmp[r][c]
+                        + 2.0 * tmp[r][c + 1]
+                        + tmp[r + 1][c - 1]
+                        + 2.0 * tmp[r + 1][c]
+                        + tmp[r + 1][c + 1]
+                    )
+                    blurred = s / 16.0
+                    orig = tmp[r][c]
+
+                    # Preserve peaks more than lowlands.
+                    preserve = smoothstep(0.62, 0.88, orig)
+                    blend = k * (1.0 - 0.80 * preserve)
+                    out[r][c] = clamp01(orig * (1.0 - blend) + blurred * blend)
+        return out
+
+    def sample_height(self, x: float, z: float) -> float:
+        # Bilinear interpolation in the heightfield (smooth queries for agents).
+        p = self.params
+        g = p.grid
+        half = p.size * 0.5
+
+        fx = ((x + half) / p.size) * (g - 1)
+        fz = ((z + half) / p.size) * (g - 1)
+
+        if fx < 0.0:
+            fx = 0.0
+        if fz < 0.0:
+            fz = 0.0
+        if fx > g - 1.001:
+            fx = g - 1.001
+        if fz > g - 1.001:
+            fz = g - 1.001
+
+        x0 = int(fx)
+        z0 = int(fz)
+        x1 = min(g - 1, x0 + 1)
+        z1 = min(g - 1, z0 + 1)
+
+        tx = fx - x0
+        tz = fz - z0
+
+        h00 = self._heights[z0][x0]
+        h10 = self._heights[z0][x1]
+        h01 = self._heights[z1][x0]
+        h11 = self._heights[z1][x1]
+
+        hx0 = h00 + (h10 - h00) * tx
+        hx1 = h01 + (h11 - h01) * tx
+        return hx0 + (hx1 - hx0) * tz
+
+    def water_depth(self, x: float, z: float) -> float:
+        # Depth of water column above terrain (0 if land).
+        h = self.sample_height(x, z)
+        return max(0.0, self.sea_level_y - h)
 
     def _build_render_cache(self) -> None:
         p = self.params
@@ -243,6 +350,7 @@ class Terrain:
         tri_nrm: list[tuple[float, float, float]] = []
         tri_col: list[tuple[int, int, int]] = []
         tri_mm: list[tuple[float, float]] = []
+        tri_avg: list[float] = []
 
         for r in range(g - 1):
             for c in range(g - 1):
@@ -251,8 +359,13 @@ class Terrain:
                 i01 = (r + 1) * g + c
                 i11 = (r + 1) * g + (c + 1)
 
-                # Two triangles per cell.
-                for ia, ib, ic in ((i00, i11, i10), (i00, i01, i11)):
+                # Two triangles per cell. Alternate diagonal to reduce visible grid artifacts.
+                if ((r + c) & 1) == 0:
+                    tris = ((i00, i11, i10), (i00, i01, i11))
+                else:
+                    tris = ((i00, i01, i10), (i10, i01, i11))
+
+                for ia, ib, ic in tris:
                     a = verts[ia]
                     b = verts[ib]
                     c0 = verts[ic]
@@ -274,11 +387,13 @@ class Terrain:
                     base = land_base_color(yavg, h01, nrm0[1])
                     miny = min(a[1], b[1], c0[1])
                     maxy = max(a[1], b[1], c0[1])
+                    avgy = (a[1] + b[1] + c0[1]) / 3.0
 
                     tri_idx.append((ia, ib, ic))
                     tri_nrm.append(nrm0)
                     tri_col.append(base)
                     tri_mm.append((miny, maxy))
+                    tri_avg.append(avgy)
 
         self.vertices_flat = verts
         self.h01_flat = h01f
@@ -286,6 +401,7 @@ class Terrain:
         self.tri_normal = tri_nrm
         self.tri_base_color = tri_col
         self.tri_minmax_y = tri_mm
+        self.tri_avg_y = tri_avg
 
     def _compute_rivers(self) -> None:
         p = self.params

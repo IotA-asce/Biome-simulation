@@ -34,8 +34,10 @@ def run() -> None:
     )
 
     show_wireframe = False
+    show_underwater = False
     render_scale = 0.75
     render_surface: pygame.Surface | None = None
+    water_layer: pygame.Surface | None = None
     dragging = False
     last_mouse = (0, 0)
 
@@ -114,6 +116,7 @@ def run() -> None:
     tri_normals = terrain.tri_normal
     tri_base = terrain.tri_base_color
     tri_mm = terrain.tri_minmax_y
+    tri_avg_y = terrain.tri_avg_y
 
     proj_ok = [False] * (g * g)
     proj = [(0.0, 0.0, 0.0)] * (g * g)
@@ -122,7 +125,16 @@ def run() -> None:
 
     def regenerate() -> None:
         nonlocal seed
-        nonlocal g, verts, tri_indices, tri_normals, tri_base, tri_mm, proj_ok, proj
+        nonlocal \
+            g, \
+            verts, \
+            tri_indices, \
+            tri_normals, \
+            tri_base, \
+            tri_mm, \
+            tri_avg_y, \
+            proj_ok, \
+            proj
         seed = _random_seed()
         terrain.regenerate(seed)
 
@@ -132,6 +144,7 @@ def run() -> None:
         tri_normals = terrain.tri_normal
         tri_base = terrain.tri_base_color
         tri_mm = terrain.tri_minmax_y
+        tri_avg_y = terrain.tri_avg_y
 
         proj_ok = [False] * (g * g)
         proj = [(0.0, 0.0, 0.0)] * (g * g)
@@ -150,6 +163,8 @@ def run() -> None:
                     regenerate()
                 elif event.key == pygame.K_g:
                     show_wireframe = not show_wireframe
+                elif event.key == pygame.K_u:
+                    show_underwater = not show_underwater
                 elif event.key == pygame.K_p:
                     # Cycle render scale for performance.
                     if render_scale > 0.9:
@@ -159,6 +174,7 @@ def run() -> None:
                     else:
                         render_scale = 1.0
                     render_surface = None
+                    water_layer = None
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     dragging = True
@@ -199,6 +215,7 @@ def run() -> None:
         rh = max(180, int(h * render_scale))
         if render_surface is None or render_surface.get_size() != (rw, rh):
             render_surface = pygame.Surface((rw, rh))
+            water_layer = None
 
         draw_surf: pygame.Surface
         if render_scale >= 0.999:
@@ -209,6 +226,11 @@ def run() -> None:
             draw_surf = render_surface
             draw_surf.fill(bg)
             frame = cam.frame((rw, rh))
+
+        if show_underwater:
+            if water_layer is None or water_layer.get_size() != draw_surf.get_size():
+                water_layer = pygame.Surface(draw_surf.get_size(), pygame.SRCALPHA)
+            water_layer.fill((0, 0, 0, 0))
 
         fog_start = 110.0
         fog_end = 380.0
@@ -248,12 +270,143 @@ def run() -> None:
             zavgw = zsumw / 4.0
             water_base = (18, 60, 82)
             water_col = apply_fog(water_base, zavgw)
-            pygame.draw.polygon(draw_surf, water_col, wc2d)
+            if show_underwater and water_layer is not None:
+                pygame.draw.polygon(water_layer, (*water_col, 120), wc2d)
+            else:
+                pygame.draw.polygon(draw_surf, water_col, wc2d)
 
         # Draw terrain in a stable back-to-front order (no global sort).
         cam_pos = frame.cam_pos
         row_range = range(0, g - 1) if cam_pos[2] >= 0.0 else range(g - 2, -1, -1)
         col_range = range(0, g - 1) if cam_pos[0] >= 0.0 else range(g - 2, -1, -1)
+
+        def seabed_color(avg_y: float) -> tuple[int, int, int]:
+            depth = clamp01((-avg_y) / max(1e-6, terrain.params.amplitude * 1.1))
+            shallow = (26, 72, 76)
+            deep = (8, 22, 28)
+            return lerp_col(shallow, deep, depth)
+
+        def push_tri(
+            tri3: tuple[
+                tuple[float, float, float],
+                tuple[float, float, float],
+                tuple[float, float, float],
+            ],
+            base_col: tuple[int, int, int],
+            out: list[tuple[float, list[tuple[float, float]], tuple[int, int, int]]],
+        ) -> None:
+            pts: list[tuple[float, float]] = []
+            zsum = 0.0
+            for vv in tri3:
+                s = frame.project(vv)
+                if s is None:
+                    return
+                pts.append((s[0], s[1]))
+                zsum += s[2]
+            zavg = zsum / 3.0
+            out.append((zavg, pts, apply_fog(base_col, zavg)))
+
+        # Volumetric look: add skirts (vertical walls) around the terrain bounds.
+        skirt_polys: list[
+            tuple[float, list[tuple[float, float]], tuple[int, int, int]]
+        ] = []
+        base_y = terrain.base_y
+        skirt_base = (36, 34, 30)
+        if base_y < -1.0:
+            for c in range(g - 1):
+                # North (r=0)
+                a = verts[0 * g + c]
+                b = verts[0 * g + (c + 1)]
+                qa = (a[0], base_y, a[2])
+                qb = (b[0], base_y, b[2])
+                push_tri((a, b, qb), skirt_base, skirt_polys)
+                push_tri((a, qb, qa), skirt_base, skirt_polys)
+
+                # South (r=g-1)
+                a = verts[(g - 1) * g + c]
+                b = verts[(g - 1) * g + (c + 1)]
+                qa = (a[0], base_y, a[2])
+                qb = (b[0], base_y, b[2])
+                push_tri((a, qb, b), skirt_base, skirt_polys)
+                push_tri((a, qa, qb), skirt_base, skirt_polys)
+
+            for r in range(g - 1):
+                # West (c=0)
+                a = verts[r * g + 0]
+                b = verts[(r + 1) * g + 0]
+                qa = (a[0], base_y, a[2])
+                qb = (b[0], base_y, b[2])
+                push_tri((a, qb, b), skirt_base, skirt_polys)
+                push_tri((a, qa, qb), skirt_base, skirt_polys)
+
+                # East (c=g-1)
+                a = verts[r * g + (g - 1)]
+                b = verts[(r + 1) * g + (g - 1)]
+                qa = (a[0], base_y, a[2])
+                qb = (b[0], base_y, b[2])
+                push_tri((a, b, qb), skirt_base, skirt_polys)
+                push_tri((a, qb, qa), skirt_base, skirt_polys)
+
+        if show_underwater:
+            # Underwater seabed pass (drawn under the water surface).
+            for r in row_range:
+                base_cell = r * (g - 1)
+                for c in col_range:
+                    cell = base_cell + c
+                    t0 = cell * 2
+                    t1 = t0 + 1
+
+                    for t in (t0, t1):
+                        miny, maxy = tri_mm[t]
+                        if miny >= 0.0:
+                            continue
+
+                        ia, ib, ic = tri_indices[t]
+                        if maxy <= 0.0:
+                            if not (proj_ok[ia] and proj_ok[ib] and proj_ok[ic]):
+                                continue
+                            sa = proj[ia]
+                            sb = proj[ib]
+                            sc = proj[ic]
+                            pts = [(sa[0], sa[1]), (sb[0], sb[1]), (sc[0], sc[1])]
+                            zavg = (sa[2] + sb[2] + sc[2]) / 3.0
+                        else:
+                            pa = verts[ia]
+                            pb = verts[ib]
+                            pc = verts[ic]
+                            poly3 = clip_poly_y([pa, pb, pc], keep_above=False)
+                            if len(poly3) < 3:
+                                continue
+                            pts = []
+                            zsum = 0.0
+                            ok = True
+                            for vv in poly3:
+                                s = frame.project(vv)
+                                if s is None:
+                                    ok = False
+                                    break
+                                pts.append((s[0], s[1]))
+                                zsum += s[2]
+                            if not ok:
+                                continue
+                            zavg = zsum / len(pts)
+
+                        nrm = tri_normals[t]
+                        diff = max(0.0, dot(nrm, light_dir))
+                        intensity = 0.22 + 0.55 * diff
+                        base = seabed_color(tri_avg_y[t])
+                        col = apply_fog(col_mul(base, intensity), zavg)
+                        pygame.draw.polygon(draw_surf, col, pts)
+
+        # Draw skirts after seabed (and before land).
+        if skirt_polys:
+            skirt_polys.sort(key=lambda it: it[0], reverse=True)
+            for _, pts, col in skirt_polys:
+                pygame.draw.polygon(draw_surf, col, pts)
+
+        # Composite translucent water on top of seabed/skirts.
+        if show_underwater and ok_w and water_layer is not None:
+            draw_surf.blit(water_layer, (0, 0))
 
         for r in row_range:
             base_cell = r * (g - 1)
@@ -370,7 +523,8 @@ def run() -> None:
             f"seed: {seed}",
             f"grid: {terrain.params.grid} x {terrain.params.grid}",
             f"render: {'wireframe overlay' if show_wireframe else 'solid'} | scale: {render_scale:0.2f}",
-            "controls: drag LMB, wheel zoom, R regenerate, G wireframe, P perf scale, arrows orbit",
+            f"water view: {'underwater' if show_underwater else 'surface'}",
+            "controls: drag LMB, wheel zoom, R regenerate, G wireframe, U underwater, P perf scale, arrows orbit",
             f"fps: {fps:0.1f}",
         ]
         y = 10
