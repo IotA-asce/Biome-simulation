@@ -4,8 +4,8 @@ Iterative biome simulation built in public (episode-by-episode). Current focus: 
 
 ## Status
 
-- Terrain: seeded Perlin fBm heightfield with mountains/hills + sea level
-- Water: ocean/lakes by sea level + generated river network
+- Terrain: controlled island generation (one main island + smaller islands)
+- Water: ocean surface over seabed (underwater view available) + generated river network
 - Rendering: pygame window + orbit camera + solid terrain (painter's algorithm)
 - Tests: deterministic noise unit tests (pytest)
 

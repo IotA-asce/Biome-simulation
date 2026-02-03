@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import sqrt
 
+from biome_sim.core.prng import Mulberry32
+
 from biome_sim.noise.perlin2d import FbmOptions, Perlin2D
 
 
@@ -18,6 +20,14 @@ class TerrainParams:
     lacunarity: float = 2.0
     persistence: float = 0.5
     warp: float = 0.55
+
+    # Controlled environment: one main island + several small islands.
+    main_island_radius: float = 0.78
+    main_island_sharpness: float = 1.65
+    small_island_count: int = 7
+    small_island_radius_min: float = 0.06
+    small_island_radius_max: float = 0.14
+    coast_wobble: float = 0.06
     river_threshold: int = 140
     river_carve: float = 0.28
     smooth_iters: int = 2
@@ -105,11 +115,35 @@ class Terrain:
             t = clamp01((x - a) / (b - a))
             return t * t * (3.0 - 2.0 * t)
 
+        rng = Mulberry32(p.seed ^ 0x9E3779B9)
+        small_islands: list[tuple[float, float, float, float]] = []
+        # island: (cx, cz, radius, strength) in normalized [-1, 1] coords.
+        for _ in range(max(0, int(p.small_island_count))):
+            for _attempt in range(20):
+                cx = rng.random() * 2.0 - 1.0
+                cz = rng.random() * 2.0 - 1.0
+                d = sqrt(cx * cx + cz * cz)
+                # Keep small islands away from the main island core.
+                if d < p.main_island_radius * 0.82:
+                    continue
+                if d > 0.98:
+                    continue
+                rad = (
+                    p.small_island_radius_min
+                    + (p.small_island_radius_max - p.small_island_radius_min)
+                    * rng.random()
+                )
+                strength = 0.55 + 0.65 * rng.random()
+                small_islands.append((cx, cz, rad, strength))
+                break
+
         for r in range(g):
             row01: list[float] = []
             z = self._z[r]
             for c in range(g):
                 x = self._x[c]
+                ux = x / half
+                uz = z / half
                 nx = (x / p.size) * p.frequency
                 nz = (z / p.size) * p.frequency
 
@@ -119,27 +153,51 @@ class Terrain:
                 nx2 = nx + wx
                 nz2 = nz + wz
 
-                continent = self._perlin.noise01(
-                    nx2 * 0.38 + 1000.0, nz2 * 0.38 - 1000.0
-                )
-                hills = self._perlin.noise01(nx2 * 0.95 + 200.0, nz2 * 0.95 - 200.0)
-                detail = self._perlin.noise01(nx2 * 2.2 - 40.0, nz2 * 2.2 + 40.0)
+                # Coastline wobble for less-perfect circles.
+                coast_n = self._perlin.fbm(nx2 * 1.7 + 220.0, nz2 * 1.7 - 220.0, opts)
+                d0 = sqrt(ux * ux + uz * uz) + coast_n * p.coast_wobble
+                main = clamp01(1.0 - (d0 / max(1e-6, p.main_island_radius)))
+                main = smoothstep(0.0, 1.0, main) ** p.main_island_sharpness
 
-                # Ridged mountains masked to show up mostly on larger landmasses.
-                mountain_mask = smoothstep(0.45, 0.78, continent)
-                mountains = self._perlin.ridged_fbm(
-                    nx2 * 1.35 + 520.0, nz2 * 1.35 - 520.0, opts
-                )
-                mountains *= mountain_mask
+                small = 0.0
+                for cx, cz, rad, strength in small_islands:
+                    dx = ux - cx
+                    dz = uz - cz
+                    di = sqrt(dx * dx + dz * dz)
+                    s = clamp01(1.0 - (di / max(1e-6, rad)))
+                    s = smoothstep(0.0, 1.0, s) ** 1.35
+                    s *= strength
+                    if s > small:
+                        small = s
 
-                # Shape curves: push up mountains, soften plains.
+                land = max(main, small)
+                land = clamp01(land)
+                land_mask = smoothstep(0.05, 0.85, land)
+
+                hills = self._perlin.noise01(nx2 * 1.05 + 200.0, nz2 * 1.05 - 200.0)
                 hills = hills**1.35
-                mountains = mountains**1.55
+                detail = self._perlin.noise01(nx2 * 2.3 - 40.0, nz2 * 2.3 + 40.0)
 
-                h01 = 0.62 * continent + 0.22 * hills + 0.40 * mountains + 0.06 * detail
-                # Gentle contrast.
+                range_mask = self._perlin.noise01(
+                    nx2 * 0.55 + 700.0, nz2 * 0.55 - 700.0
+                )
+                range_mask = smoothstep(0.56, 0.78, range_mask)
+                mountains = self._perlin.ridged_fbm(
+                    nx2 * 1.55 + 520.0, nz2 * 1.55 - 520.0, opts
+                )
+                mountains = (mountains**1.35) * range_mask
+
+                # Ocean bathymetry (seabed variation) + land elevation.
+                ocean = 1.0 - land_mask
+                seabed = self._perlin.noise01(nx2 * 0.45 - 1100.0, nz2 * 0.45 + 1100.0)
+                ocean_depth = (ocean**1.55) * (0.30 + 0.22 * seabed)
+                ocean_h01 = p.sea_level01 - ocean_depth
+
+                land_elev = land_mask * (
+                    0.06 + 0.45 * hills + 0.62 * mountains + 0.06 * detail
+                )
+                h01 = ocean_h01 + land_elev
                 h01 = clamp01(h01)
-                h01 = h01**1.10
                 row01.append(h01)
             heights01.append(row01)
 
@@ -156,7 +214,7 @@ class Terrain:
         for r in range(g):
             row: list[float] = []
             for c in range(g):
-                y = (heights01[r][c] - p.sea_level01) * p.amplitude
+                y = (self._heights01[r][c] - p.sea_level01) * p.amplitude
                 row.append(y)
                 if y < min_y:
                     min_y = y

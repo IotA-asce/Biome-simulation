@@ -248,32 +248,40 @@ def run() -> None:
             proj_ok[i] = True
             proj[i] = s0
 
-        # Draw ocean as a single plane at y=0 (huge speedup vs per-triangle water).
+        # Water surface (y=0): tessellated so it renders even when corners are off-screen.
         half = terrain.params.size * 0.5
-        water_corners = [
-            (-half, 0.0, -half),
-            (half, 0.0, -half),
-            (half, 0.0, half),
-            (-half, 0.0, half),
-        ]
-        wc2d: list[tuple[float, float]] = []
-        zsumw = 0.0
-        ok_w = True
-        for p0 in water_corners:
-            s = frame.project(p0)
-            if s is None:
-                ok_w = False
-                break
-            wc2d.append((s[0], s[1]))
-            zsumw += s[2]
-        if ok_w:
-            zavgw = zsumw / 4.0
-            water_base = (18, 60, 82)
-            water_col = apply_fog(water_base, zavgw)
-            if show_underwater and water_layer is not None:
-                pygame.draw.polygon(water_layer, (*water_col, 120), wc2d)
-            else:
-                pygame.draw.polygon(draw_surf, water_col, wc2d)
+        water_steps = 18
+        wstep = (half * 2.0) / (water_steps - 1)
+
+        water_base = (26, 96, 148)
+        water_alpha = 160
+
+        for wr in range(water_steps - 1):
+            z0 = -half + wr * wstep
+            z1 = z0 + wstep
+            for wc in range(water_steps - 1):
+                x0 = -half + wc * wstep
+                x1 = x0 + wstep
+
+                p00 = (x0, 0.0, z0)
+                p10 = (x1, 0.0, z0)
+                p01 = (x0, 0.0, z1)
+                p11 = (x1, 0.0, z1)
+
+                tris = ((p00, p11, p10), (p00, p01, p11))
+                for a, b, c0 in tris:
+                    sa = frame.project(a)
+                    sb = frame.project(b)
+                    sc = frame.project(c0)
+                    if sa is None or sb is None or sc is None:
+                        continue
+                    zavgw = (sa[2] + sb[2] + sc[2]) / 3.0
+                    col = apply_fog(water_base, zavgw)
+                    pts = [(sa[0], sa[1]), (sb[0], sb[1]), (sc[0], sc[1])]
+                    if show_underwater and water_layer is not None:
+                        pygame.draw.polygon(water_layer, (*col, water_alpha), pts)
+                    else:
+                        pygame.draw.polygon(draw_surf, col, pts)
 
         # Draw terrain in a stable back-to-front order (no global sort).
         cam_pos = frame.cam_pos
@@ -405,7 +413,7 @@ def run() -> None:
                 pygame.draw.polygon(draw_surf, col, pts)
 
         # Composite translucent water on top of seabed/skirts.
-        if show_underwater and ok_w and water_layer is not None:
+        if show_underwater and water_layer is not None:
             draw_surf.blit(water_layer, (0, 0))
 
         for r in row_range:
